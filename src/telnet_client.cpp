@@ -35,7 +35,7 @@ bool TelnetClient::socket_connect() {
         return false;
     }
 
-    if (connect(socket_fd_, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+    if (::connect(socket_fd_, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
         last_error_ = "Failed to connect to " + ip_ + ":" + std::to_string(port_) + 
                      ": " + std::string(strerror(errno));
         close(socket_fd_);

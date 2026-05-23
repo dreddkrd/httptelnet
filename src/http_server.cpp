@@ -53,7 +53,7 @@ bool HTTPServer::start() {
     });
 
     // GET /status
-    server->Get("/status", [](const httplib::Request& req, httplib::Response& res) {
+    server->Get("/status", [](const httplib::Request& /* req */, httplib::Response& res) {
         try {
             auto request = json::object();
             auto response = RequestHandler::handle_status(request);

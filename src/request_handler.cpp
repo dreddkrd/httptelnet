@@ -29,7 +29,7 @@ json RequestHandler::parse_connect_params(const json& request) {
     params_json["password_prompt"] = "password:";
     params_json["enable_password"] = "";
     params_json["enable_prompt"] = "Password:";
-    params_json["command_prompt"] = "[#$]"
+    params_json["command_prompt"] = "[#$]";
     params_json["timeout_ms"] = 5000;
 
     if (request.contains("ip")) params_json["ip"] = request["ip"];
@@ -138,7 +138,7 @@ json RequestHandler::handle_execute(const json& request) {
     }
 }
 
-json RequestHandler::handle_status(const json& request) {
+json RequestHandler::handle_status(const json& /* request */) {
     try {
         json data;
         data["active_connections"] = DeviceManager::instance().get_active_connections_count();
