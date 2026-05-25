@@ -10,7 +10,7 @@
 #include <sstream>
 
 TelnetClient::TelnetClient(const std::string& ip, int port)
-    : ip_(ip), port_(port), socket_fd_(-1), connected_(false) {}
+    : ip_(ip), port_(port), socket_fd_(-1), connected_(false), keepalive_running_(false) {}
 
 TelnetClient::~TelnetClient() {
     disconnect();
@@ -43,7 +43,7 @@ bool TelnetClient::socket_connect() {
         return false;
     }
 
-    // Set non-blocking mode with timeout
+    // Set non-blocking mode
     int flags = fcntl(socket_fd_, F_GETFL, 0);
     fcntl(socket_fd_, F_SETFL, flags | O_NONBLOCK);
 
@@ -61,6 +61,7 @@ bool TelnetClient::socket_disconnect() {
 }
 
 bool TelnetClient::disconnect() {
+    stop_keepalive_thread();
     std::lock_guard<std::mutex> lock(socket_mutex_);
     return socket_disconnect();
 }
@@ -157,7 +158,7 @@ std::string TelnetClient::read_until_timeout_unlocked(int timeout_ms) {
     return result;
 }
 
-bool TelnetClient::matches_pattern(const std::string& text, const std::string& pattern) {
+bool TelnetClient::matches_pattern(const std::string& text, const std::string& pattern) const {
     try {
         std::regex regex_pattern(pattern);
         return std::regex_search(text, regex_pattern);
@@ -166,11 +167,30 @@ bool TelnetClient::matches_pattern(const std::string& text, const std::string& p
     }
 }
 
-bool TelnetClient::wait_for_pattern_unlocked(const std::string& pattern, int timeout_ms) {
+std::string TelnetClient::extract_last_prompt_line(const std::string& text, const std::string& prompt_pattern) const {
+    // Split by newlines and find last line containing prompt pattern
+    std::istringstream iss(text);
+    std::string line;
+    std::string last_matching_line;
+
+    while (std::getline(iss, line)) {
+        if (matches_pattern(line, prompt_pattern)) {
+            last_matching_line = line;
+        }
+    }
+
+    return last_matching_line;
+}
+
+bool TelnetClient::wait_for_prompt_unlocked(const std::string& prompt_pattern, int timeout_ms, std::string& captured_prompt) {
     auto start_time = std::chrono::steady_clock::now();
+    captured_prompt = "";
 
     while (true) {
-        if (matches_pattern(receive_buffer_, pattern)) {
+        // Check if we have prompt in buffer
+        std::string matching_line = extract_last_prompt_line(receive_buffer_, prompt_pattern);
+        if (!matching_line.empty()) {
+            captured_prompt = matching_line;
             return true;
         }
 
@@ -182,7 +202,7 @@ bool TelnetClient::wait_for_pattern_unlocked(const std::string& pattern, int tim
         }
 
         int remaining = timeout_ms - elapsed;
-        std::string data = receive_data_unlocked(std::min(remaining, 1000));
+        std::string data = read_until_timeout_unlocked(std::min(remaining, 1000));
         if (data.empty() && elapsed >= timeout_ms) {
             break;
         }
@@ -196,7 +216,8 @@ bool TelnetClient::authenticate(const ConnectParams& params) {
     current_params_ = params;
 
     // Wait for username prompt
-    if (!wait_for_pattern_unlocked(params.username_prompt, params.timeout_ms)) {
+    std::string temp_prompt;
+    if (!wait_for_prompt_unlocked(params.username_prompt, params.timeout_ms, temp_prompt)) {
         last_error_ = "Username prompt not received: " + params.username_prompt;
         return false;
     }
@@ -211,7 +232,7 @@ bool TelnetClient::authenticate(const ConnectParams& params) {
     receive_buffer_.clear();
 
     // Wait for password prompt
-    if (!wait_for_pattern_unlocked(params.password_prompt, params.timeout_ms)) {
+    if (!wait_for_prompt_unlocked(params.password_prompt, params.timeout_ms, temp_prompt)) {
         last_error_ = "Password prompt not received: " + params.password_prompt;
         return false;
     }
@@ -227,7 +248,7 @@ bool TelnetClient::authenticate(const ConnectParams& params) {
 
     // Check if enable password is needed
     if (!params.enable_password.empty()) {
-        if (!wait_for_pattern_unlocked(params.enable_prompt, params.timeout_ms)) {
+        if (!wait_for_prompt_unlocked(params.enable_prompt, params.timeout_ms, temp_prompt)) {
             last_error_ = "Enable prompt not received: " + params.enable_prompt;
             return false;
         }
@@ -242,13 +263,81 @@ bool TelnetClient::authenticate(const ConnectParams& params) {
         receive_buffer_.clear();
     }
 
-    // Wait for command prompt
-    if (!wait_for_pattern_unlocked(params.command_prompt, params.timeout_ms)) {
+    // Wait for command prompt and capture it
+    if (!wait_for_prompt_unlocked(params.command_prompt, params.timeout_ms, current_prompt_)) {
         last_error_ = "Command prompt not received: " + params.command_prompt;
         return false;
     }
 
+    // Execute terminal nopage command if specified
+    if (!params.terminal_nopage.empty()) {
+        receive_buffer_.clear();
+        if (!send_data_unlocked(params.terminal_nopage + "\n")) {
+            last_error_ = "Failed to send terminal nopage command";
+            return false;
+        }
+
+        if (!wait_for_prompt_unlocked(params.command_prompt, params.timeout_ms, current_prompt_)) {
+            last_error_ = "Failed to receive prompt after terminal nopage command";
+            return false;
+        }
+    }
+
     return true;
+}
+
+bool TelnetClient::reconnect_if_needed() {
+    if (!connected_ || socket_fd_ < 0) {
+        socket_disconnect();
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        
+        std::lock_guard<std::mutex> lock(socket_mutex_);
+        if (!socket_connect()) {
+            return false;
+        }
+
+        receive_buffer_.clear();
+        if (!authenticate(current_params_)) {
+            socket_disconnect();
+            return false;
+        }
+
+        connected_ = true;
+        return true;
+    }
+    return true;
+}
+
+void TelnetClient::keepalive_thread_func() {
+    while (keepalive_running_) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(current_params_.keepalive_interval_ms));
+        
+        if (!keepalive_running_) break;
+
+        // Try to send keepalive command
+        {
+            std::lock_guard<std::mutex> lock(socket_mutex_);
+            if (connected_ && socket_fd_ >= 0) {
+                send_data_unlocked(current_params_.keepalive_command);
+            }
+        }
+    }
+}
+
+void TelnetClient::start_keepalive_thread() {
+    if (keepalive_running_) return;
+    
+    keepalive_running_ = true;
+    keepalive_thread_ = std::thread(&TelnetClient::keepalive_thread_func, this);
+}
+
+void TelnetClient::stop_keepalive_thread() {
+    if (!keepalive_running_) return;
+    
+    keepalive_running_ = false;
+    if (keepalive_thread_.joinable()) {
+        keepalive_thread_.join();
+    }
 }
 
 bool TelnetClient::connect(const ConnectParams& params) {
@@ -262,29 +351,32 @@ bool TelnetClient::connect(const ConnectParams& params) {
         return false;
     }
 
-    // Wait for initial banner
-    receive_buffer_ = read_until_timeout_unlocked(params.timeout_ms);
-
+    // Don't wait for banner, go directly to authentication
     if (!authenticate(params)) {
         socket_disconnect();
         return false;
     }
 
     connected_ = true;
+
+    // Start keepalive thread
+    start_keepalive_thread();
+
     return true;
 }
 
-bool TelnetClient::reconnect(const ConnectParams& params) {
-    disconnect();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    return connect(params);
-}
-
-CommandResponse TelnetClient::execute_command(const std::string& command, const std::string& cmd_id) {
+CommandResponse TelnetClient::execute_segment(const CommandSegment& segment, const std::string& cmd_id) {
     CommandResponse response;
     response.command_id = cmd_id;
     response.success = false;
     response.error_code = 1;
+
+    // Reconnect if needed
+    if (!reconnect_if_needed()) {
+        response.error_message = "Failed to reconnect to device";
+        response.error_code = 1002;
+        return response;
+    }
 
     std::lock_guard<std::mutex> lock(socket_mutex_);
 
@@ -294,50 +386,111 @@ CommandResponse TelnetClient::execute_command(const std::string& command, const 
         return response;
     }
 
-    // Clear buffer before sending command
-    receive_buffer_.clear();
+    std::string accumulated_output;
 
-    // Send command
-    if (!send_data_unlocked(command + "\n")) {
-        response.error_message = "Failed to send command";
-        response.error_code = 1005;
-        return response;
+    // Execute path commands
+    for (const auto& path_cmd : segment.path) {
+        receive_buffer_.clear();
+
+        if (!send_data_unlocked(path_cmd + "\n")) {
+            response.error_message = "Failed to send path command: " + path_cmd;
+            response.error_code = 1005;
+            return response;
+        }
+
+        // Wait for prompt after path command
+        std::string new_prompt;
+        if (!wait_for_prompt_unlocked(current_params_.command_prompt, current_params_.timeout_ms, new_prompt)) {
+            response.error_message = "Prompt not received after path command: " + path_cmd;
+            response.error_code = 1005;
+            return response;
+        }
+
+        // Update current prompt for nested level
+        if (!new_prompt.empty()) {
+            current_prompt_ = new_prompt;
+        }
+
+        accumulated_output += receive_buffer_;
     }
 
-    // Read response until we get the prompt back
-    std::string output = read_until_timeout_unlocked(current_params_.timeout_ms);
-    receive_buffer_ = output;
+    // Execute actual commands
+    for (const auto& cmd : segment.commands) {
+        receive_buffer_.clear();
 
-    // Extract command output (remove echo and prompt)
-    size_t cmd_pos = output.find(command);
-    if (cmd_pos != std::string::npos) {
-        output = output.substr(cmd_pos + command.length());
+        if (!send_data_unlocked(cmd + "\n")) {
+            response.error_message = "Failed to send command: " + cmd;
+            response.error_code = 1005;
+            return response;
+        }
+
+        // Wait for prompt after command
+        std::string temp_prompt;
+        if (!wait_for_prompt_unlocked(current_params_.command_prompt, current_params_.timeout_ms, temp_prompt)) {
+            response.error_message = "Prompt not received after command: " + cmd;
+            response.error_code = 1005;
+            return response;
+        }
+
+        // Extract output (remove echo and final prompt line)
+        std::string output = receive_buffer_;
+        size_t cmd_pos = output.find(cmd);
+        if (cmd_pos != std::string::npos) {
+            output = output.substr(cmd_pos + cmd.length());
+        }
+
+        // Remove last line (which contains the prompt)
+        size_t last_newline = output.rfind('\n');
+        if (last_newline != std::string::npos) {
+            output = output.substr(0, last_newline);
+        }
+
+        // Trim leading newlines
+        while (!output.empty() && (output.front() == '\n' || output.front() == '\r')) {
+            output.erase(0, 1);
+        }
+
+        accumulated_output += output + "\n";
     }
 
-    // Remove trailing prompt
-    size_t prompt_pos = output.rfind(current_params_.command_prompt);
-    if (prompt_pos != std::string::npos) {
-        output = output.substr(0, prompt_pos);
+    // Execute exit commands to return to root
+    for (size_t i = 0; i < segment.path.size(); ++i) {
+        receive_buffer_.clear();
+
+        if (!send_data_unlocked("exit\n")) {
+            response.error_message = "Failed to send exit command";
+            response.error_code = 1005;
+            return response;
+        }
+
+        // Wait for prompt
+        std::string temp_prompt;
+        if (!wait_for_prompt_unlocked(current_params_.command_prompt, current_params_.timeout_ms, temp_prompt)) {
+            response.error_message = "Prompt not received after exit command";
+            response.error_code = 1005;
+            return response;
+        }
+
+        if (!temp_prompt.empty()) {
+            current_prompt_ = temp_prompt;
+        }
     }
 
-    // Trim whitespace
-    while (!output.empty() && (output.front() == '\n' || output.front() == '\r')) {
-        output.erase(0, 1);
-    }
-    while (!output.empty() && (output.back() == '\n' || output.back() == '\r')) {
-        output.pop_back();
+    // Trim trailing whitespace
+    while (!accumulated_output.empty() && (accumulated_output.back() == '\n' || accumulated_output.back() == '\r')) {
+        accumulated_output.pop_back();
     }
 
-    response.output = output;
+    response.output = accumulated_output;
     response.success = true;
     response.error_code = 0;
     return response;
 }
 
-std::vector<CommandResponse> TelnetClient::execute_commands(const std::vector<std::string>& commands) {
+std::vector<CommandResponse> TelnetClient::execute_segments(const std::vector<CommandSegment>& segments) {
     std::vector<CommandResponse> responses;
-    for (size_t i = 0; i < commands.size(); ++i) {
-        responses.push_back(execute_command(commands[i], std::to_string(i)));
+    for (size_t i = 0; i < segments.size(); ++i) {
+        responses.push_back(execute_segment(segments[i], std::to_string(i)));
     }
     return responses;
 }

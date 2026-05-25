@@ -30,7 +30,10 @@ json RequestHandler::parse_connect_params(const json& request) {
     params_json["enable_password"] = "";
     params_json["enable_prompt"] = "Password:";
     params_json["command_prompt"] = "[#$]";
+    params_json["terminal_nopage"] = "";
     params_json["timeout_ms"] = 5000;
+    params_json["keepalive_interval_ms"] = 30000;
+    params_json["keepalive_command"] = "\n";
 
     if (request.contains("ip")) params_json["ip"] = request["ip"];
     if (request.contains("port")) params_json["port"] = request["port"];
@@ -41,7 +44,10 @@ json RequestHandler::parse_connect_params(const json& request) {
     if (request.contains("enable_password")) params_json["enable_password"] = request["enable_password"];
     if (request.contains("enable_prompt")) params_json["enable_prompt"] = request["enable_prompt"];
     if (request.contains("command_prompt")) params_json["command_prompt"] = request["command_prompt"];
+    if (request.contains("terminal_nopage")) params_json["terminal_nopage"] = request["terminal_nopage"];
     if (request.contains("timeout_ms")) params_json["timeout_ms"] = request["timeout_ms"];
+    if (request.contains("keepalive_interval_ms")) params_json["keepalive_interval_ms"] = request["keepalive_interval_ms"];
+    if (request.contains("keepalive_command")) params_json["keepalive_command"] = request["keepalive_command"];
 
     return params_json;
 }
@@ -72,7 +78,10 @@ json RequestHandler::handle_connect(const json& request) {
         params.enable_password = params_json["enable_password"];
         params.enable_prompt = params_json["enable_prompt"];
         params.command_prompt = params_json["command_prompt"];
+        params.terminal_nopage = params_json["terminal_nopage"];
         params.timeout_ms = params_json["timeout_ms"];
+        params.keepalive_interval_ms = params_json["keepalive_interval_ms"];
+        params.keepalive_command = params_json["keepalive_command"];
 
         std::string result = DeviceManager::instance().connect_device(params);
         if (result == "OK") {
@@ -103,22 +112,36 @@ json RequestHandler::handle_execute(const json& request) {
                                       "Device not connected. Please connect first.");
         }
 
-        if (!request.contains("commands")) {
-            return build_error_response(ErrorCodes::MISSING_PARAMS, "Missing 'commands' parameter");
+        if (!request.contains("segments")) {
+            return build_error_response(ErrorCodes::MISSING_PARAMS, "Missing 'segments' parameter");
         }
 
-        std::vector<std::string> commands;
-        if (request["commands"].is_array()) {
-            for (const auto& cmd : request["commands"]) {
-                commands.push_back(cmd.get<std::string>());
+        std::vector<CommandSegment> segments;
+        if (request["segments"].is_array()) {
+            for (const auto& seg_json : request["segments"]) {
+                CommandSegment segment;
+
+                // Parse path
+                if (seg_json.contains("path") && seg_json["path"].is_array()) {
+                    for (const auto& path_cmd : seg_json["path"]) {
+                        segment.path.push_back(path_cmd.get<std::string>());
+                    }
+                }
+
+                // Parse commands
+                if (seg_json.contains("commands") && seg_json["commands"].is_array()) {
+                    for (const auto& cmd : seg_json["commands"]) {
+                        segment.commands.push_back(cmd.get<std::string>());
+                    }
+                }
+
+                segments.push_back(segment);
             }
-        } else if (request["commands"].is_string()) {
-            commands.push_back(request["commands"].get<std::string>());
         } else {
-            return build_error_response(ErrorCodes::INVALID_REQUEST, "Commands must be string or array");
+            return build_error_response(ErrorCodes::INVALID_REQUEST, "Segments must be an array");
         }
 
-        auto responses = DeviceManager::instance().execute_commands(ip, commands);
+        auto responses = DeviceManager::instance().execute_segments(ip, segments);
         json data = json::array();
         for (const auto& resp : responses) {
             json item;

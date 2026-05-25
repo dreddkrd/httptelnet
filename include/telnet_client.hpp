@@ -15,18 +15,20 @@ struct ConnectParams {
     int port;
     std::string username;
     std::string password;
-    std::string username_prompt;  // regex pattern for username prompt
-    std::string password_prompt;  // regex pattern for password prompt
-    std::string enable_password;
-    std::string enable_prompt;    // regex pattern for enable prompt
-    std::string command_prompt;   // regex pattern for command prompt ($ or #)
-    int timeout_ms;
+    std::string username_prompt;      // regex pattern for username prompt
+    std::string password_prompt;      // regex pattern for password prompt
+    std::string enable_password;      // optional
+    std::string enable_prompt;        // regex pattern for enable prompt
+    std::string command_prompt;       // regex pattern for command prompt ($ or #)
+    std::string terminal_nopage;      // command to disable pagination (e.g., "terminal length 0")
+    int timeout_ms;                   // connection timeout
+    int keepalive_interval_ms;        // keepalive interval (default 30000 ms = 30 sec)
+    std::string keepalive_command;    // keepalive command (default "\n")
 };
 
-struct CommandRequest {
-    std::string command;
-    std::string command_id;
-    std::chrono::steady_clock::time_point created_at;
+struct CommandSegment {
+    std::vector<std::string> path;    // navigation commands
+    std::vector<std::string> commands; // actual commands to execute
 };
 
 struct CommandResponse {
@@ -46,11 +48,10 @@ public:
     bool connect(const ConnectParams& params);
     bool disconnect();
     bool is_connected() const;
-    bool reconnect(const ConnectParams& params);
 
     // Command execution
-    CommandResponse execute_command(const std::string& command, const std::string& cmd_id);
-    std::vector<CommandResponse> execute_commands(const std::vector<std::string>& commands);
+    CommandResponse execute_segment(const CommandSegment& segment, const std::string& cmd_id);
+    std::vector<CommandResponse> execute_segments(const std::vector<CommandSegment>& segments);
 
     // Getters
     std::string get_ip() const { return ip_; }
@@ -58,17 +59,24 @@ public:
     std::string get_last_error() const { return last_error_; }
 
 private:
-    // Socket operations (locked versions - called with lock held)
+    // Socket operations (called with lock held)
     bool socket_connect();
     bool socket_disconnect();
     bool send_data_unlocked(const std::string& data);
     std::string receive_data_unlocked(int timeout_ms = 5000);
-    bool wait_for_pattern_unlocked(const std::string& pattern, int timeout_ms = 5000);
+    bool wait_for_prompt_unlocked(const std::string& prompt_pattern, int timeout_ms, std::string& captured_prompt);
     std::string read_until_timeout_unlocked(int timeout_ms);
 
     // Internal helpers
     bool authenticate(const ConnectParams& params);
-    bool matches_pattern(const std::string& text, const std::string& pattern);
+    bool reconnect_if_needed();
+    bool matches_pattern(const std::string& text, const std::string& pattern) const;
+    std::string extract_last_prompt_line(const std::string& text, const std::string& prompt_pattern) const;
+
+    // Keepalive thread
+    void keepalive_thread_func();
+    void start_keepalive_thread();
+    void stop_keepalive_thread();
 
     // Members
     std::string ip_;
@@ -80,5 +88,11 @@ private:
 
     // Buffers and synchronization
     std::string receive_buffer_;
+    std::string current_prompt_;      // cached prompt for current level
     std::mutex socket_mutex_;
+
+    // Keepalive
+    std::thread keepalive_thread_;
+    bool keepalive_running_;
+    std::mutex keepalive_mutex_;
 };

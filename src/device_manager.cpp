@@ -47,20 +47,10 @@ bool DeviceManager::ensure_device_connected(const std::string& ip) {
     }
 
     auto device = it->second;
-    if (!device->client->is_connected() && device->authenticated) {
-        // Try to reconnect
-        if (device->client->reconnect(device->params)) {
-            device->last_used = std::chrono::steady_clock::now();
-            return true;
-        }
-        device->authenticated = false;
-        return false;
-    }
-
-    return device->client->is_connected();
+    return device->client->is_connected() && device->authenticated;
 }
 
-CommandResponse DeviceManager::execute_command(const std::string& ip, const std::string& command) {
+CommandResponse DeviceManager::execute_segment(const std::string& ip, const CommandSegment& segment) {
     CommandResponse response;
     response.success = false;
 
@@ -82,13 +72,13 @@ CommandResponse DeviceManager::execute_command(const std::string& ip, const std:
         return response;
     }
 
-    response = device->client->execute_command(command, command);
+    response = device->client->execute_segment(segment, "");
     device->last_used = std::chrono::steady_clock::now();
     return response;
 }
 
-std::vector<CommandResponse> DeviceManager::execute_commands(const std::string& ip,
-                                                              const std::vector<std::string>& commands) {
+std::vector<CommandResponse> DeviceManager::execute_segments(const std::string& ip,
+                                                              const std::vector<CommandSegment>& segments) {
     std::vector<CommandResponse> responses;
 
     if (!ensure_device_connected(ip)) {
@@ -115,8 +105,8 @@ std::vector<CommandResponse> DeviceManager::execute_commands(const std::string& 
         return responses;
     }
 
-    for (size_t i = 0; i < commands.size(); ++i) {
-        auto response = device->client->execute_command(commands[i], std::to_string(i));
+    for (size_t i = 0; i < segments.size(); ++i) {
+        auto response = device->client->execute_segment(segments[i], std::to_string(i));
         responses.push_back(response);
     }
 
@@ -151,27 +141,6 @@ std::string DeviceManager::get_device_status(const std::string& ip) {
     }
 
     return "disconnected";
-}
-
-void DeviceManager::cleanup_idle_connections(int idle_timeout_ms) {
-    std::lock_guard<std::mutex> lock(devices_mutex_);
-
-    auto now = std::chrono::steady_clock::now();
-    std::vector<std::string> to_remove;
-
-    for (auto& pair : devices_) {
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-            now - pair.second->last_used).count();
-
-        if (elapsed > idle_timeout_ms) {
-            pair.second->client->disconnect();
-            to_remove.push_back(pair.first);
-        }
-    }
-
-    for (const auto& ip : to_remove) {
-        devices_.erase(ip);
-    }
 }
 
 int DeviceManager::get_active_connections_count() const {

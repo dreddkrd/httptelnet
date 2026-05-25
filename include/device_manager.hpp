@@ -21,14 +21,13 @@ public:
 
     // Connection lifecycle
     std::string connect_device(const ConnectParams& params);
-    CommandResponse execute_command(const std::string& ip, const std::string& command);
-    std::vector<CommandResponse> execute_commands(const std::string& ip, 
-                                                   const std::vector<std::string>& commands);
+    CommandResponse execute_segment(const std::string& ip, const CommandSegment& segment);
+    std::vector<CommandResponse> execute_segments(const std::string& ip, 
+                                                   const std::vector<CommandSegment>& segments);
     bool disconnect_device(const std::string& ip);
     std::string get_device_status(const std::string& ip);
 
     // Connection pool management
-    void cleanup_idle_connections(int idle_timeout_ms = 600000);  // 10 minutes
     int get_active_connections_count() const;
     std::vector<std::string> get_active_devices() const;
 
