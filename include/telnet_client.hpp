@@ -63,9 +63,9 @@ private:
     bool socket_connect();
     bool socket_disconnect();
     bool send_data_unlocked(const std::string& data);
-    std::string receive_data_unlocked(int timeout_ms = 5000);
-    bool wait_for_prompt_unlocked(const std::string& prompt_pattern, int timeout_ms, std::string& captured_prompt);
+    std::string receive_until_prompt_unlocked(const std::string& prompt_pattern, int timeout_ms, std::string& captured_prompt);
     std::string read_until_timeout_unlocked(int timeout_ms);
+    bool check_connection_unlocked();
 
     // Internal helpers
     bool authenticate(const ConnectParams& params);
@@ -95,4 +95,7 @@ private:
     std::thread keepalive_thread_;
     bool keepalive_running_;
     std::mutex keepalive_mutex_;
+
+    // Reconnection tracking
+    std::chrono::steady_clock::time_point last_reconnect_attempt_;
 };
