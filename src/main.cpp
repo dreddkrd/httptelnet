@@ -44,15 +44,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Start background cleanup thread
-    std::thread cleanup_thread([]() {
-        while (true) {
-            std::this_thread::sleep_for(std::chrono::seconds(30));
-            DeviceManager::instance().cleanup_idle_connections(600000);  // 10 minutes
-        }
-    });
-    cleanup_thread.detach();
-
     std::cout << "Server is running. Press Ctrl+C to stop." << std::endl;
 
     // Keep the main thread alive
