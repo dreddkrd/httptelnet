@@ -1,4 +1,5 @@
 # Build directories
+third_party/
 build/
 CMakeFiles/
 cmake_install.cmake
