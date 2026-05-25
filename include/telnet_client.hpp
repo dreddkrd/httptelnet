@@ -58,16 +58,16 @@ public:
     std::string get_last_error() const { return last_error_; }
 
 private:
-    // Socket operations
+    // Socket operations (locked versions - called with lock held)
     bool socket_connect();
     bool socket_disconnect();
-    bool send_data(const std::string& data);
-    std::string receive_data(int timeout_ms = 5000);
-    bool wait_for_pattern(const std::string& pattern, int timeout_ms = 5000);
+    bool send_data_unlocked(const std::string& data);
+    std::string receive_data_unlocked(int timeout_ms = 5000);
+    bool wait_for_pattern_unlocked(const std::string& pattern, int timeout_ms = 5000);
+    std::string read_until_timeout_unlocked(int timeout_ms);
 
     // Internal helpers
     bool authenticate(const ConnectParams& params);
-    std::string read_until_timeout(int timeout_ms);
     bool matches_pattern(const std::string& text, const std::string& pattern);
 
     // Members

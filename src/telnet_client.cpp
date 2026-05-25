@@ -69,9 +69,7 @@ bool TelnetClient::is_connected() const {
     return connected_ && socket_fd_ >= 0;
 }
 
-bool TelnetClient::send_data(const std::string& data) {
-    std::lock_guard<std::mutex> lock(socket_mutex_);
-
+bool TelnetClient::send_data_unlocked(const std::string& data) {
     if (!connected_ || socket_fd_ < 0) {
         last_error_ = "Socket not connected";
         return false;
@@ -98,12 +96,11 @@ bool TelnetClient::send_data(const std::string& data) {
     return true;
 }
 
-std::string TelnetClient::receive_data(int timeout_ms) {
-    std::lock_guard<std::mutex> lock(socket_mutex_);
-    return read_until_timeout(timeout_ms);
+std::string TelnetClient::receive_data_unlocked(int timeout_ms) {
+    return read_until_timeout_unlocked(timeout_ms);
 }
 
-std::string TelnetClient::read_until_timeout(int timeout_ms) {
+std::string TelnetClient::read_until_timeout_unlocked(int timeout_ms) {
     if (!connected_ || socket_fd_ < 0) {
         return "";
     }
@@ -169,7 +166,7 @@ bool TelnetClient::matches_pattern(const std::string& text, const std::string& p
     }
 }
 
-bool TelnetClient::wait_for_pattern(const std::string& pattern, int timeout_ms) {
+bool TelnetClient::wait_for_pattern_unlocked(const std::string& pattern, int timeout_ms) {
     auto start_time = std::chrono::steady_clock::now();
 
     while (true) {
@@ -185,7 +182,7 @@ bool TelnetClient::wait_for_pattern(const std::string& pattern, int timeout_ms) 
         }
 
         int remaining = timeout_ms - elapsed;
-        std::string data = receive_data(std::min(remaining, 1000));
+        std::string data = receive_data_unlocked(std::min(remaining, 1000));
         if (data.empty() && elapsed >= timeout_ms) {
             break;
         }
@@ -199,13 +196,13 @@ bool TelnetClient::authenticate(const ConnectParams& params) {
     current_params_ = params;
 
     // Wait for username prompt
-    if (!wait_for_pattern(params.username_prompt, params.timeout_ms)) {
+    if (!wait_for_pattern_unlocked(params.username_prompt, params.timeout_ms)) {
         last_error_ = "Username prompt not received: " + params.username_prompt;
         return false;
     }
 
     // Send username
-    if (!send_data(params.username + "\n")) {
+    if (!send_data_unlocked(params.username + "\n")) {
         last_error_ = "Failed to send username";
         return false;
     }
@@ -214,13 +211,13 @@ bool TelnetClient::authenticate(const ConnectParams& params) {
     receive_buffer_.clear();
 
     // Wait for password prompt
-    if (!wait_for_pattern(params.password_prompt, params.timeout_ms)) {
+    if (!wait_for_pattern_unlocked(params.password_prompt, params.timeout_ms)) {
         last_error_ = "Password prompt not received: " + params.password_prompt;
         return false;
     }
 
     // Send password
-    if (!send_data(params.password + "\n")) {
+    if (!send_data_unlocked(params.password + "\n")) {
         last_error_ = "Failed to send password";
         return false;
     }
@@ -230,13 +227,13 @@ bool TelnetClient::authenticate(const ConnectParams& params) {
 
     // Check if enable password is needed
     if (!params.enable_password.empty()) {
-        if (!wait_for_pattern(params.enable_prompt, params.timeout_ms)) {
+        if (!wait_for_pattern_unlocked(params.enable_prompt, params.timeout_ms)) {
             last_error_ = "Enable prompt not received: " + params.enable_prompt;
             return false;
         }
 
         // Send enable password
-        if (!send_data(params.enable_password + "\n")) {
+        if (!send_data_unlocked(params.enable_password + "\n")) {
             last_error_ = "Failed to send enable password";
             return false;
         }
@@ -246,7 +243,7 @@ bool TelnetClient::authenticate(const ConnectParams& params) {
     }
 
     // Wait for command prompt
-    if (!wait_for_pattern(params.command_prompt, params.timeout_ms)) {
+    if (!wait_for_pattern_unlocked(params.command_prompt, params.timeout_ms)) {
         last_error_ = "Command prompt not received: " + params.command_prompt;
         return false;
     }
@@ -266,7 +263,7 @@ bool TelnetClient::connect(const ConnectParams& params) {
     }
 
     // Wait for initial banner
-    receive_buffer_ = read_until_timeout(params.timeout_ms);
+    receive_buffer_ = read_until_timeout_unlocked(params.timeout_ms);
 
     if (!authenticate(params)) {
         socket_disconnect();
@@ -301,14 +298,14 @@ CommandResponse TelnetClient::execute_command(const std::string& command, const 
     receive_buffer_.clear();
 
     // Send command
-    if (!send_data(command + "\n")) {
+    if (!send_data_unlocked(command + "\n")) {
         response.error_message = "Failed to send command";
         response.error_code = 1005;
         return response;
     }
 
     // Read response until we get the prompt back
-    std::string output = read_until_timeout(current_params_.timeout_ms);
+    std::string output = read_until_timeout_unlocked(current_params_.timeout_ms);
     receive_buffer_ = output;
 
     // Extract command output (remove echo and prompt)
