@@ -10,6 +10,13 @@
 #include <regex>
 #include <chrono>
 
+enum class ConnectionStatus {
+    CONNECTED,
+    DISCONNECTED,
+    UNAVAILABLE,  // Device unavailable after 3 failed reconnection attempts
+    RECONNECTING   // Background reconnection in progress
+};
+
 struct ConnectParams {
     std::string ip;
     int port;
@@ -48,6 +55,8 @@ public:
     bool connect(const ConnectParams& params);
     bool disconnect();
     bool is_connected() const;
+    ConnectionStatus get_status() const;
+    std::string get_status_string() const;
 
     // Command execution
     CommandResponse execute_segment(const CommandSegment& segment, const std::string& cmd_id);
@@ -69,7 +78,14 @@ private:
 
     // Internal helpers
     bool authenticate(const ConnectParams& params);
-    bool reconnect_if_needed();
+    bool try_reconnect_unlocked();  // Single reconnection attempt
+    bool wait_for_reconnection_unlocked(int max_wait_ms = 5000);  // Wait for successful reconnection
+
+    // Reconnection thread functions
+    void reconnection_thread_func();
+    void start_reconnection_thread();
+    void stop_reconnection_thread();
+
     bool matches_pattern(const std::string& text, const std::string& pattern) const;
     std::string extract_last_prompt_line(const std::string& text, const std::string& prompt_pattern) const;
 
@@ -82,7 +98,6 @@ private:
     std::string ip_;
     int port_;
     int socket_fd_;
-    bool connected_;
     std::string last_error_;
     ConnectParams current_params_;
 
@@ -91,11 +106,20 @@ private:
     std::string current_prompt_;      // cached prompt for current level
     std::mutex socket_mutex_;
 
-    // Keepalive
+    // Connection status management
+    ConnectionStatus connection_status_;
+    std::mutex status_mutex_;
+    std::condition_variable status_changed_;
+    int failed_reconnect_attempts_;   // Counter for reconnection failures
+    std::chrono::steady_clock::time_point last_reconnect_attempt_;
+
+    // Keepalive thread
     std::thread keepalive_thread_;
     bool keepalive_running_;
     std::mutex keepalive_mutex_;
 
-    // Reconnection tracking
-    std::chrono::steady_clock::time_point last_reconnect_attempt_;
+    // Background reconnection thread
+    std::thread reconnection_thread_;
+    bool reconnection_thread_running_;
+    std::mutex reconnection_thread_mutex_;
 };
