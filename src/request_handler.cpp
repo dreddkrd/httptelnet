@@ -19,37 +19,26 @@ json RequestHandler::build_success_response(const json& data) {
     return response;
 }
 
-json RequestHandler::parse_connect_params(const json& request) {
-    json params_json;
+void RequestHandler::parse_connect_params(const json& request, json& params_json) {
+//    json params_json;
     params_json["ip"] = "";
     params_json["port"] = 23;
     params_json["username"] = "";
     params_json["password"] = "";
-    params_json["username_prompt"] = "login:|username:";
-    params_json["password_prompt"] = "password:";
+    params_json["username_prompt"] = "(L|l)ogin:|(U|u)sername:";
+    params_json["password_prompt"] = "(P|p)assword:";
     params_json["enable_password"] = "";
-    params_json["enable_prompt"] = "Password:";
+    params_json["enable_prompt"] = "(P|p)assword:";
     params_json["command_prompt"] = "[#$]";
     params_json["terminal_nopage"] = "";
     params_json["timeout_ms"] = 5000;
     params_json["keepalive_interval_ms"] = 30000;
     params_json["keepalive_command"] = "\n";
 
-    if (request.contains("ip")) params_json["ip"] = request["ip"];
-    if (request.contains("port")) params_json["port"] = request["port"];
-    if (request.contains("username")) params_json["username"] = request["username"];
-    if (request.contains("password")) params_json["password"] = request["password"];
-    if (request.contains("username_prompt")) params_json["username_prompt"] = request["username_prompt"];
-    if (request.contains("password_prompt")) params_json["password_prompt"] = request["password_prompt"];
-    if (request.contains("enable_password")) params_json["enable_password"] = request["enable_password"];
-    if (request.contains("enable_prompt")) params_json["enable_prompt"] = request["enable_prompt"];
-    if (request.contains("command_prompt")) params_json["command_prompt"] = request["command_prompt"];
-    if (request.contains("terminal_nopage")) params_json["terminal_nopage"] = request["terminal_nopage"];
-    if (request.contains("timeout_ms")) params_json["timeout_ms"] = request["timeout_ms"];
-    if (request.contains("keepalive_interval_ms")) params_json["keepalive_interval_ms"] = request["keepalive_interval_ms"];
-    if (request.contains("keepalive_command")) params_json["keepalive_command"] = request["keepalive_command"];
-
-    return params_json;
+    // Fill params data from request
+    for (const auto& it : params_json.items()) {
+        if (request.contains(it.key())) params_json[it.key()] = request[it.key()];
+    }
 }
 
 json RequestHandler::handle_connect(const json& request) {
@@ -66,7 +55,8 @@ json RequestHandler::handle_connect(const json& request) {
             return build_error_response(ErrorCodes::INVALID_IP, "Invalid IP address format");
         }
 
-        json params_json = parse_connect_params(request);
+        json params_json;
+        parse_connect_params(request, params_json);
 
         ConnectParams params;
         params.ip = params_json["ip"];

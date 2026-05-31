@@ -18,7 +18,7 @@ private:
     // Response builders
     static json build_error_response(int code, const std::string& message);
     static json build_success_response(const json& data = json::object());
-    static json parse_connect_params(const json& request);
+    static void parse_connect_params(const json& request, json& params_json);
 };
 
 // Error codes
